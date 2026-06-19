@@ -11,7 +11,7 @@ export default defineConfig({
       // Phase 88 (FEED-01): feed-builder's "Open feed" invokes the NAP-INTENT
       // service (intentOpen('feed', …)); the runtime ACL gates intent.* by this
       // declared capability, so 'intent' is required or the invoke is dropped.
-      requires: ['identity', 'relay', 'intent', 'storage'],
+      requires: ['identity', 'relay', 'intent', 'storage', 'theme'],
       artifactMode: 'single-file',
     }),
   ],
