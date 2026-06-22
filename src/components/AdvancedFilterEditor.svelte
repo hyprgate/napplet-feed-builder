@@ -1,6 +1,7 @@
 <script lang="ts">
   import TagInput from './TagInput.svelte';
   import { pubkeysFromInputs, type AdvFilter } from '../lib/filters';
+  import { searchAuthorSuggestions } from '../lib/author-suggestions';
 
   interface Props {
     filter: AdvFilter;
@@ -69,6 +70,7 @@
       mono
       onchange={(authors) => update({ authors })}
       transform={(v) => pubkeysFromInputs([v]).pubkeys[0] ?? v}
+      suggest={searchAuthorSuggestions}
       invalid={(v) => !HEX64.test(v)}
     />
   </div>

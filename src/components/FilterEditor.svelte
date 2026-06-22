@@ -1,6 +1,7 @@
 <script lang="ts">
   import TagInput from './TagInput.svelte';
   import { pubkeysFromInputs } from '../lib/filters';
+  import { searchAuthorSuggestions } from '../lib/author-suggestions';
 
   export interface BasicBlock {
     kinds: number[];
@@ -93,6 +94,7 @@
       placeholder="npub / nprofile / hex pubkey…"
       mono
       onchange={(authors) => onchange({ ...block, authors })}
+      suggest={searchAuthorSuggestions}
       invalid={(v) => pubkeysFromInputs([v]).pubkeys.length === 0}
     />
   </div>
