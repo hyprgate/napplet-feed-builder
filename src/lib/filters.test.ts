@@ -22,8 +22,13 @@ import {
   isValidName,
   parseEntityEvent,
   parseFilterJson,
+  canRepresentAsBasic,
+  preferredViewForFilters,
   pubkeysFromInputs,
   buildFilter,
+  normalizeRelayInput,
+  validateRelayInput,
+  validateRelayInputs,
   validateFilterArray,
 } from './filters';
 import { relay, storage } from '@napplet/sdk';
@@ -108,6 +113,45 @@ describe('buildFilter', () => {
   it('never includes limit', () => {
     const filter = buildFilter({ kinds: [1], authors: [], hashtags: [] }) as Record<string, unknown>;
     expect('limit' in filter).toBe(false);
+  });
+});
+
+describe('Basic representability', () => {
+  it('allows filters that Basic can round-trip without losing constraints', () => {
+    expect(canRepresentAsBasic([
+      { kinds: [1], authors: [PUBKEY_A], '#t': ['nostr'] },
+      { kinds: [6], '#t': ['repost'] },
+    ])).toBe(true);
+  });
+
+  it('rejects filters with Advanced-only fields or non-topic tag constraints', () => {
+    expect(canRepresentAsBasic([{ kinds: [1], since: 100 }])).toBe(false);
+    expect(canRepresentAsBasic([{ ids: ['a'.repeat(64)] }])).toBe(false);
+    expect(canRepresentAsBasic([{ '#e': ['event-id'] }])).toBe(false);
+    expect(canRepresentAsBasic([{ search: 'nostr' }])).toBe(false);
+  });
+
+  it('chooses Advanced for loaded filters that Basic cannot represent', () => {
+    expect(preferredViewForFilters([{ kinds: [1], '#t': ['nostr'] }])).toBe('basic');
+    expect(preferredViewForFilters([{ kinds: [1], since: 100 }])).toBe('advanced');
+  });
+});
+
+describe('relay input normalization and validation', () => {
+  it('prepends wss:// for bare relay hosts and dedupes normalized values', () => {
+    expect(validateRelayInputs(['relay.example', 'wss://relay.example', ' ws://local.test '])).toEqual({
+      relays: ['wss://relay.example', 'ws://local.test'],
+      invalid: [],
+    });
+  });
+
+  it('keeps blanks out and reports malformed relay URLs before save/open', () => {
+    expect(normalizeRelayInput('')).toBe('');
+    expect(validateRelayInput('wss://relay.example')).toEqual({ relay: 'wss://relay.example', error: null });
+    expect(validateRelayInputs(['wss://', 'https://relay.example', 'not a relay'])).toEqual({
+      relays: [],
+      invalid: ['wss://', 'https://relay.example', 'wss://not a relay'],
+    });
   });
 });
 

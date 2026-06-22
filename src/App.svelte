@@ -4,14 +4,19 @@
   import type { Filter } from 'nostr-tools';
   import {
     advToFilter,
+    canRepresentAsBasic,
     createFeedBuilderStore,
     emptyAdvFilter,
     encodeEntity,
     filterToAdv,
     isValidName,
     pubkeysFromInputs,
+    normalizeRelayInput,
+    preferredViewForFilters,
     sanitizeFilter,
     isFilterEmpty,
+    validateRelayInput,
+    validateRelayInputs,
     validateFilterArray,
     type AdvFilter,
     type EntityType,
@@ -20,6 +25,7 @@
   import FilterEditor, { type BasicBlock } from './components/FilterEditor.svelte';
   import AdvancedFilterEditor from './components/AdvancedFilterEditor.svelte';
   import TagInput from './components/TagInput.svelte';
+  import { searchRelaySuggestions } from './lib/relay-suggestions';
 
   let version = $state(0);
   const store = createFeedBuilderStore(() => (version += 1));
@@ -73,13 +79,18 @@
 
   // The relay list applies for everything except a single Basic filter.
   const relaysVisible = $derived(view !== 'basic' || mode === 'feed');
+  const basicAvailable = $derived(canRepresentAsBasic(currentFilters()));
 
   // Live JSON validation (only meaningful in the JSON view).
   const jsonValidation = $derived(view === 'json' ? validateFilterArray(jsonText) : null);
 
   // Resolve the current draft into filters + relays, or an error string.
   const built = $derived.by((): { filters: Filter[]; relays: string[]; error: string | null } => {
-    const effRelays = relaysVisible ? relays.map((r) => r.trim()).filter(Boolean) : [];
+    const relayCheck = validateRelayInputs(relaysVisible ? relays : []);
+    const effRelays = relayCheck.relays;
+    if (relayCheck.invalid.length > 0) {
+      return { filters: [], relays: effRelays, error: `Invalid relay URL: ${relayCheck.invalid[0]}` };
+    }
     if (view === 'json') {
       const v = validateFilterArray(jsonText);
       if (!v.ok) {
@@ -88,6 +99,10 @@
       const filters = v.filters.filter((f) => !isFilterEmpty(f));
       if (filters.length === 0) return { filters, relays: effRelays, error: 'Add at least one filter constraint' };
       return { filters, relays: effRelays, error: null };
+    }
+    const invalidAuthors = invalidAuthorInputs();
+    if (invalidAuthors.length > 0) {
+      return { filters: [], relays: effRelays, error: `Invalid pubkey: ${invalidAuthors[0]}` };
     }
     const rawFilters = view === 'advanced'
       ? advFilters.map(advToFilter)
@@ -125,6 +140,17 @@
     return (mode === 'feed' ? blocks : blocks.slice(0, 1)).map(blockToFilter);
   }
 
+  function invalidAuthorInputs(): string[] {
+    if (view === 'advanced') {
+      return advFilters.flatMap((filter) => pubkeysFromInputs(filter.authors).invalid);
+    }
+    if (view === 'basic') {
+      const activeBlocks = mode === 'feed' ? blocks : blocks.slice(0, 1);
+      return activeBlocks.flatMap((block) => pubkeysFromInputs(block.authors).invalid);
+    }
+    return [];
+  }
+
   function loadFilters(filters: Filter[]): void {
     blocks = filters.length > 0 ? filters.map(filterToBlock) : [emptyBlock()];
     advFilters = filters.length > 0 ? filters.map(filterToAdv) : [emptyAdvFilter()];
@@ -135,6 +161,10 @@
     if (next === view) return;
     const filters = currentFilters();
     if (next === 'basic') {
+      if (!canRepresentAsBasic(filters)) {
+        status = 'Basic view cannot represent these filters without dropping constraints';
+        return;
+      }
       blocks = filters.length > 0 ? filters.map(filterToBlock) : [emptyBlock()];
       mode = filters.length > 1 || relays.length > 0 ? 'feed' : 'filter';
     } else if (next === 'advanced') {
@@ -171,6 +201,7 @@
     relays = [...entity.relays];
     mode = entity.relays.length > 0 || entity.filters.length > 1 ? 'feed' : 'filter';
     loadFilters(entity.filters);
+    view = preferredViewForFilters(entity.filters);
     status = null;
   }
 
@@ -304,7 +335,15 @@
   <section class="editor">
     <div class="toolbar">
       <div class="seg" role="tablist" aria-label="View">
-        <button type="button" role="tab" class:active={view === 'basic'} onclick={() => switchView('basic')}>Basic</button>
+        <button
+          type="button"
+          role="tab"
+          class:active={view === 'basic'}
+          disabled={!basicAvailable}
+          aria-disabled={!basicAvailable}
+          title={basicAvailable ? 'Basic view' : 'Advanced-only filters cannot be represented in Basic'}
+          onclick={() => switchView('basic')}
+        >Basic</button>
         <button type="button" role="tab" class:active={view === 'advanced'} onclick={() => switchView('advanced')}>Advanced</button>
         <button type="button" role="tab" class:active={view === 'json'} onclick={() => switchView('json')}>JSON</button>
       </div>
@@ -397,8 +436,12 @@
             values={relays}
             placeholder="wss://relay.example…"
             mono
-            onchange={(next) => (relays = next)}
-            invalid={(v) => !/^wss?:\/\//i.test(v)}
+            onchange={(next) => (relays = next.map(normalizeRelayInput).filter(Boolean))}
+            transform={normalizeRelayInput}
+            suggest={searchRelaySuggestions}
+            onfocusdraft={(draft) => draft.trim() === '' ? 'wss://' : draft}
+            onblurdraft={(draft) => draft.trim().toLowerCase() === 'wss://' ? '' : draft}
+            invalid={(v) => validateRelayInput(v).error !== null}
           />
         </div>
       {/if}
@@ -596,6 +639,10 @@
   .seg button.active {
     background: var(--hg-accent-cyan, #82d8f7);
     color: var(--hg-bg-base, #050505);
+  }
+  .seg button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
   }
   .type-indicator {
     font-size: 11px;

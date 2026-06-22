@@ -87,6 +87,83 @@ export function buildFilter(input: BasicFilterInput): Filter {
   return filter as Filter;
 }
 
+const BASIC_FILTER_KEYS = new Set(['kinds', 'authors', '#t']);
+
+export type FeedBuilderView = 'basic' | 'advanced';
+
+/** Whether Basic mode can round-trip this filter without dropping constraints. */
+export function canRepresentFilterAsBasic(filter: Filter): boolean {
+  const clean = sanitizeFilter(filter) as Record<string, unknown>;
+  return Object.entries(clean).every(([key, value]) => {
+    if (!BASIC_FILTER_KEYS.has(key)) return false;
+    if (key === 'kinds') return Array.isArray(value) && value.every((v) => Number.isInteger(v) && (v as number) >= 0);
+    if (key === 'authors') return Array.isArray(value) && value.every((v) => typeof v === 'string' && /^[0-9a-f]{64}$/i.test(v));
+    return Array.isArray(value) && value.every((v) => typeof v === 'string');
+  });
+}
+
+/** Whether a filter set can stay editable in Basic mode without lossy conversion. */
+export function canRepresentAsBasic(filters: Filter[]): boolean {
+  return filters.every(canRepresentFilterAsBasic);
+}
+
+/** View to select when loading saved filters. */
+export function preferredViewForFilters(filters: Filter[]): FeedBuilderView {
+  return canRepresentAsBasic(filters) ? 'basic' : 'advanced';
+}
+
+export interface RelayValidationResult {
+  relay: string;
+  error: string | null;
+}
+
+/** Normalize user relay entry: bare hostnames become wss:// hosts; blanks vanish. */
+export function normalizeRelayInput(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return '';
+  if (/^wss?:\/\//i.test(trimmed)) {
+    return trimmed.replace(/^ws:\/\//i, 'ws://').replace(/^wss:\/\//i, 'wss://');
+  }
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed;
+  return `wss://${trimmed}`;
+}
+
+export function validateRelayInput(input: string): RelayValidationResult {
+  const relayUrl = normalizeRelayInput(input);
+  if (!relayUrl) return { relay: '', error: null };
+  try {
+    const parsed = new URL(relayUrl);
+    if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
+      return { relay: relayUrl, error: 'Relay URL must use ws:// or wss://' };
+    }
+    if (!parsed.hostname || /\s/.test(relayUrl)) {
+      return { relay: relayUrl, error: 'Relay URL must include a host' };
+    }
+    return { relay: relayUrl, error: null };
+  } catch {
+    return { relay: relayUrl, error: 'Relay URL is invalid' };
+  }
+}
+
+export function validateRelayInputs(inputs: string[]): { relays: string[]; invalid: string[] } {
+  const relays: string[] = [];
+  const invalid: string[] = [];
+  const seen = new Set<string>();
+  for (const input of inputs) {
+    const result = validateRelayInput(input);
+    if (!result.relay) continue;
+    if (result.error) {
+      invalid.push(result.relay);
+      continue;
+    }
+    if (!seen.has(result.relay)) {
+      seen.add(result.relay);
+      relays.push(result.relay);
+    }
+  }
+  return { relays, invalid };
+}
+
 /** Drop `limit` and empty arrays from a filter. */
 export function sanitizeFilter(filter: Filter): Filter {
   const out: Record<string, unknown> = {};
@@ -371,7 +448,11 @@ async function save(ctx: FeedBuilderContext, input: SaveInput): Promise<SaveResu
   }
   const filters = input.filters.map(sanitizeFilter).filter((f) => !isFilterEmpty(f));
   if (filters.length === 0) throw new Error('Add at least one filter constraint before saving');
-  const relays = [...new Set(input.relays.map((r) => r.trim()).filter(Boolean))];
+  const relayCheck = validateRelayInputs(input.relays);
+  if (relayCheck.invalid.length > 0) {
+    throw new Error(`Invalid relay URL: ${relayCheck.invalid[0]}`);
+  }
+  const relays = relayCheck.relays;
 
   const { type, encoded } = encodeEntity(filters, relays);
   const template = buildEventTemplate(input.name, type, encoded);
