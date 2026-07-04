@@ -412,10 +412,10 @@ describe('store', () => {
   });
 
   it('subscribes to kind 39823 for the user and lists parsed entities newest-first', () => {
-    let onEvent: ((event: NostrEvent) => void) | null = null;
+    let onEvent: ((result: { event: NostrEvent }) => void) | null = null;
     let onEose: (() => void) | null = null;
     vi.mocked(relay.subscribe).mockImplementation((_filters, ev, eose) => {
-      onEvent = ev as (e: NostrEvent) => void;
+      onEvent = ev as (result: { event: NostrEvent }) => void;
       onEose = eose as () => void;
       return { close: vi.fn() };
     });
@@ -431,8 +431,8 @@ describe('store', () => {
 
     const a = encodeEntity([{ kinds: [1] }], []).encoded;
     const b = encodeEntity([{ kinds: [30023] }], ['wss://r.example']).encoded;
-    onEvent!(makeEvent({ created_at: 10, content: a, tags: [['d', 'older']] }));
-    onEvent!(makeEvent({ created_at: 20, content: b, tags: [['d', 'newer']] }));
+    onEvent!({ event: makeEvent({ created_at: 10, content: a, tags: [['d', 'older']] }) });
+    onEvent!({ event: makeEvent({ created_at: 20, content: b, tags: [['d', 'newer']] }) });
     onEose!();
 
     expect(store.state.loaded).toBe(true);
@@ -440,9 +440,9 @@ describe('store', () => {
   });
 
   it('keeps only the newest event per identifier', () => {
-    let onEvent: ((event: NostrEvent) => void) | null = null;
+    let onEvent: ((result: { event: NostrEvent }) => void) | null = null;
     vi.mocked(relay.subscribe).mockImplementation((_f, ev) => {
-      onEvent = ev as (e: NostrEvent) => void;
+      onEvent = ev as (result: { event: NostrEvent }) => void;
       return { close: vi.fn() };
     });
     const store = createFeedBuilderStore();
@@ -450,8 +450,8 @@ describe('store', () => {
 
     const v1 = encodeEntity([{ kinds: [1] }], []).encoded;
     const v2 = encodeEntity([{ kinds: [1] }, { kinds: [6] }], []).encoded;
-    onEvent!(makeEvent({ created_at: 5, content: v1, tags: [['d', 'x']] }));
-    onEvent!(makeEvent({ created_at: 9, content: v2, tags: [['d', 'x']] }));
+    onEvent!({ event: makeEvent({ created_at: 5, content: v1, tags: [['d', 'x']] }) });
+    onEvent!({ event: makeEvent({ created_at: 9, content: v2, tags: [['d', 'x']] }) });
 
     expect(store.state.entities).toHaveLength(1);
     expect(store.state.entities[0]?.type).toBe('nfilters');
@@ -487,16 +487,16 @@ describe('store', () => {
   });
 
   it('deletes an entity via kind 5 and drops it locally', async () => {
-    let onEvent: ((event: NostrEvent) => void) | null = null;
+    let onEvent: ((result: { event: NostrEvent }) => void) | null = null;
     vi.mocked(relay.subscribe).mockImplementation((_f, ev) => {
-      onEvent = ev as (e: NostrEvent) => void;
+      onEvent = ev as (result: { event: NostrEvent }) => void;
       return { close: vi.fn() };
     });
     vi.mocked(relay.publish).mockResolvedValue(makeEvent({ kind: 5 }));
     const store = createFeedBuilderStore();
     store.init(PUBKEY_A);
     const enc = encodeEntity([{ kinds: [1] }], []).encoded;
-    onEvent!(makeEvent({ created_at: 5, content: enc, tags: [['d', 'x']] }));
+    onEvent!({ event: makeEvent({ created_at: 5, content: enc, tags: [['d', 'x']] }) });
     const address = `${KIND_FILTER_FEED}:${PUBKEY_A}:x`;
 
     await store.remove(address);

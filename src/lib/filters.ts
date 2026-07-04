@@ -422,7 +422,8 @@ function init(ctx: FeedBuilderContext, pubkey: string): void {
   try {
     const sub = relay.subscribe(
       [{ kinds: [KIND_FILTER_FEED], authors: [pubkey] }],
-      (event: NostrEvent) => {
+      (result) => {
+        const event = result.event as NostrEvent;
         rememberEvent(ctx, event);
         recompute(ctx);
       },

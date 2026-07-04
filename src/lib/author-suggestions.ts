@@ -90,7 +90,8 @@ function displayName(pubkey: string, metadata: ProfileMetadata | null | undefine
 
 async function loadMetadata(pubkeys: string[]): Promise<Map<string, ProfileMetadata>> {
   if (pubkeys.length === 0) return new Map();
-  const events = await relay.query(pubkeys.map((pubkey) => ({ kinds: [0], authors: [pubkey], limit: 1 }))) as NostrEvent[];
+  const results = await relay.query(pubkeys.map((pubkey) => ({ kinds: [0], authors: [pubkey], limit: 1 })));
+  const events = results.map((result) => result.event as NostrEvent);
   const metadata = new Map<string, ProfileMetadata>();
   for (const event of events) {
     const parsed = parseMetadata(event);

@@ -29,13 +29,15 @@ describe('searchAuthorSuggestions', () => {
     });
     vi.mocked(relay.query).mockResolvedValue([
       {
-        id: 'profile',
-        kind: 0,
-        pubkey: PUBKEY,
-        created_at: 1,
-        content: JSON.stringify({ display_name: 'Alice' }),
-        tags: [],
-        sig: 'sig',
+        event: {
+          id: 'profile',
+          kind: 0,
+          pubkey: PUBKEY,
+          created_at: 1,
+          content: JSON.stringify({ display_name: 'Alice' }),
+          tags: [],
+          sig: 'sig',
+        },
       },
     ]);
 

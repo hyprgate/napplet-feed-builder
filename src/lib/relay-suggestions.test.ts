@@ -16,22 +16,26 @@ describe('searchRelaySuggestions', () => {
   it('reads NIP-66 kind 30166 relay discovery events and matches normalized URLs', async () => {
     vi.mocked(relay.query).mockResolvedValue([
       {
-        id: 'relay-a',
-        kind: 30166,
-        pubkey: 'a'.repeat(64),
-        created_at: 1,
-        content: '',
-        tags: [['d', 'wss://relay.example']],
-        sig: 'sig',
+        event: {
+          id: 'relay-a',
+          kind: 30166,
+          pubkey: 'a'.repeat(64),
+          created_at: 1,
+          content: '',
+          tags: [['d', 'wss://relay.example']],
+          sig: 'sig',
+        },
       },
       {
-        id: 'relay-b',
-        kind: 30166,
-        pubkey: 'b'.repeat(64),
-        created_at: 1,
-        content: '',
-        tags: [['d', 'wss://other.example']],
-        sig: 'sig',
+        event: {
+          id: 'relay-b',
+          kind: 30166,
+          pubkey: 'b'.repeat(64),
+          created_at: 1,
+          content: '',
+          tags: [['d', 'wss://other.example']],
+          sig: 'sig',
+        },
       },
     ]);
 
@@ -44,13 +48,15 @@ describe('searchRelaySuggestions', () => {
   it('ignores malformed discovered relay URLs', async () => {
     vi.mocked(relay.query).mockResolvedValue([
       {
-        id: 'bad',
-        kind: 30166,
-        pubkey: 'a'.repeat(64),
-        created_at: 1,
-        content: '',
-        tags: [['d', 'https://relay.example']],
-        sig: 'sig',
+        event: {
+          id: 'bad',
+          kind: 30166,
+          pubkey: 'a'.repeat(64),
+          created_at: 1,
+          content: '',
+          tags: [['d', 'https://relay.example']],
+          sig: 'sig',
+        },
       },
     ]);
 

@@ -17,7 +17,8 @@ function relayUrlFromDiscovery(event: NostrEvent): string | null {
 export async function searchRelaySuggestions(draft: string): Promise<TagSuggestion[]> {
   const query = normalizeRelayInput(draft).replace(/^wss?:\/\//i, '').toLowerCase();
   if (query.length < 2) return [];
-  const events = await relay.query({ kinds: [RELAY_DISCOVERY_KIND], limit: 80 }) as NostrEvent[];
+  const results = await relay.query({ kinds: [RELAY_DISCOVERY_KIND], limit: 80 });
+  const events = results.map((result) => result.event as NostrEvent);
   const seen = new Set<string>();
   const suggestions: TagSuggestion[] = [];
   for (const event of events) {
