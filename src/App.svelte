@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { identity, intentOpen } from '@napplet/sdk';
-  import { nfeedToFeedPayload } from '@hyprgate/utils';
-  import type { Filter } from 'nostr-tools';
+  import { identity, intent } from '@napplet/sdk';
+  import { parseIntentResult } from '@hyprgate/types';
+  import { createFeedIntentRequest, nfeedToFeedPayload } from '@hyprgate/utils';
+  import type { Filter } from 'nostr-tools/filter';
   import {
     advToFilter,
     canRepresentAsBasic,
@@ -260,7 +261,7 @@
   /**
    * Open a saved entity as a LIVE feed via the NAP-INTENT service (FEED-01).
    * Maps the entity to a FeedIntentPayload (nfeed → relay-pin, nfilter(s) →
-   * outbox) through the shared adapter, then intentOpen('feed', payload) creates
+   * outbox) through the shared adapter, then a canonical feed request creates
    * a dedicated feed window. Gated behind shell.ready() + supports('intent')
    * (Phase 87 supports-gate) so it degrades gracefully when intent is absent.
    */
@@ -273,7 +274,16 @@
         status = 'Opening feeds is not supported by this shell';
         return;
       }
-      await intentOpen('feed', nfeedToFeedPayload(entity));
+      const request = createFeedIntentRequest(nfeedToFeedPayload(entity));
+      if (!request) {
+        status = 'Open feed request is invalid';
+        return;
+      }
+      const result = parseIntentResult(await intent.invoke(request));
+      if (!result || result.archetype !== request.archetype || result.action !== (request.action ?? 'open') || !result.ok || !result.handled) {
+        status = 'Opening feeds is not supported by this shell';
+        return;
+      }
       status = `Opened “${entity.identifier}”`;
     } catch (error) {
       status = error instanceof Error ? error.message : 'Open feed failed';

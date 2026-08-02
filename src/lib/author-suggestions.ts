@@ -1,5 +1,5 @@
 import { cvm, relay, type McpToolResult, type NostrEvent } from '@napplet/sdk';
-import { nip19 } from 'nostr-tools';
+import * as nip19 from 'nostr-tools/nip19';
 import type { TagSuggestion } from './tag-suggestions';
 
 const RELATR_SERVER = {

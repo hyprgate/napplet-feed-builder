@@ -1,6 +1,7 @@
 import type { NostrEvent } from '@hyprgate/types';
 import { relay, type Subscription } from '@napplet/sdk';
-import { nip19, type Filter } from 'nostr-tools';
+import * as nip19 from 'nostr-tools/nip19';
+import type { Filter } from 'nostr-tools/filter';
 import { encodeNfeed, encodeNfilter, encodeNfilters } from '@sandwichfarm/encoded-entities';
 // Anti-drift (FEED-04 / Plan 89-01): the PURE kind-39823 decode helpers live in
 // ONE place — @hyprgate/utils — so the shell chrome and this builder decode 39823

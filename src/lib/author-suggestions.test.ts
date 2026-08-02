@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { cvm, relay } from '@napplet/sdk';
-import { nip19 } from 'nostr-tools';
+import * as nip19 from 'nostr-tools/nip19';
 import { searchAuthorSuggestions } from './author-suggestions';
 
 vi.mock('@napplet/sdk', () => ({
