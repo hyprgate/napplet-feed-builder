@@ -1,7 +1,7 @@
 <script lang="ts">
   import { identity, intent } from '@napplet/sdk';
   import { parseIntentResult } from '@hyprgate/types';
-  import { createFeedIntentRequest, nfeedToFeedPayload } from '@hyprgate/utils';
+  import { invokeNappletIntent, createFeedIntentRequest, nfeedToFeedPayload } from '@hyprgate/utils';
   import type { Filter } from 'nostr-tools/filter';
   import {
     advToFilter,
@@ -279,12 +279,12 @@
         status = 'Open feed request is invalid';
         return;
       }
-      const result = parseIntentResult(await intent.invoke(request));
-      if (!result || result.archetype !== request.archetype || result.action !== (request.action ?? 'open') || !result.ok || !result.handled) {
+      const result = parseIntentResult(await invokeNappletIntent(request));
+      if (!result || result.archetype !== request.archetype || result.action !== (request.action ?? 'open') || !result.ok) {
         status = 'Opening feeds is not supported by this shell';
         return;
       }
-      status = `Opened “${entity.identifier}”`;
+      status = `Opening “${entity.identifier}”`;
     } catch (error) {
       status = error instanceof Error ? error.message : 'Open feed failed';
     }
