@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NostrEvent } from '@hyprgate/types';
+import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import * as nip19 from 'nostr-tools/nip19';
 import {
   decodeNfeed,
@@ -31,9 +32,10 @@ import {
   validateRelayInputs,
   validateFilterArray,
 } from './filters';
-import { relay, storage } from '@napplet/sdk';
+import { outbox, relay, storage } from '@napplet/sdk';
 
 vi.mock('@napplet/sdk', () => ({
+  outbox: { publish: vi.fn() },
   relay: {
     subscribe: vi.fn().mockReturnValue({ close: vi.fn() }),
     publish: vi.fn(),
@@ -47,6 +49,14 @@ vi.mock('@napplet/sdk', () => ({
 
 const PUBKEY_A = 'a'.repeat(64);
 const PUBKEY_B = 'b'.repeat(64);
+const SIGNING_KEY = new Uint8Array(32);
+SIGNING_KEY[31] = 1;
+const SIGNING_PUBKEY = getPublicKey(SIGNING_KEY);
+
+function signedEntity(name: string, relays: string[] = []): NostrEvent {
+  const { type, encoded } = encodeEntity([{ kinds: [1] }], relays);
+  return finalizeEvent({ ...buildEventTemplate(name, type, encoded), created_at: 1_700_000_007 }, SIGNING_KEY);
+}
 
 function makeEvent(overrides: Partial<NostrEvent>): NostrEvent {
   return {
@@ -406,6 +416,7 @@ describe('parseEntityEvent', () => {
 describe('store', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(outbox.publish).mockReset();
     vi.mocked(storage.getItem).mockResolvedValue(null);
     vi.mocked(storage.setItem).mockResolvedValue(undefined);
     vi.mocked(relay.subscribe).mockReturnValue({ close: vi.fn() });
@@ -457,21 +468,63 @@ describe('store', () => {
     expect(store.state.entities[0]?.type).toBe('nfilters');
   });
 
-  it('publishes a named filter as a kind 39823 event', async () => {
-    vi.mocked(relay.publish).mockResolvedValue(makeEvent({ tags: [['d', 'morning']] }));
+  it('publishes a named filter through outbox and retains the returned signed event', async () => {
+    const signed = signedEntity('morning');
+    vi.mocked(outbox.publish).mockResolvedValue({ ok: true, event: signed });
     const store = createFeedBuilderStore();
-    store.init(PUBKEY_A);
+    store.init(SIGNING_PUBKEY);
 
     const result = await store.save({ name: 'morning', filters: [{ kinds: [1] }], relays: [] });
 
     const expectedEncoded = encodeEntity([{ kinds: [1] }], []).encoded;
-    expect(relay.publish).toHaveBeenCalledWith(expect.objectContaining({
+    expect(outbox.publish).toHaveBeenCalledWith({
       kind: KIND_FILTER_FEED,
       content: expectedEncoded,
       tags: [['d', 'morning'], ['title', 'morning'], ['t', 'nfilter']],
-    }));
-    expect(result.address).toBe(`${KIND_FILTER_FEED}:${PUBKEY_A}:morning`);
+      created_at: expect.any(Number),
+    });
+    expect(relay.publish).not.toHaveBeenCalled();
+    expect(result.event).toEqual(signed);
+    expect(result.address).toBe(`${KIND_FILTER_FEED}:${SIGNING_PUBKEY}:morning`);
     expect(store.state.entities.map((e) => e.identifier)).toContain('morning');
+    expect(store.state.entities[0]?.createdAt).toBe(signed.created_at);
+    expect(store.state.publishing).toBe(false);
+  });
+
+  it('keeps feed relay pins in the saved content without overriding outbox publishing routes', async () => {
+    const relays = ['wss://relay.primal.net'];
+    vi.mocked(outbox.publish).mockResolvedValue({ ok: true, event: signedEntity('pinned', relays) });
+    const store = createFeedBuilderStore();
+    store.init(SIGNING_PUBKEY);
+    await store.save({ name: 'pinned', filters: [{ kinds: [1] }], relays });
+    expect(vi.mocked(outbox.publish).mock.calls[0]).toHaveLength(1);
+    expect(decodeNfeed(vi.mocked(outbox.publish).mock.calls[0]![0].content)).toEqual({ filters: [{ kinds: [1] }], relays });
+    expect(relay.publish).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { ok: false, error: 'publish denied' },
+    { ok: true },
+  ])('does not save locally without a confirmed signed event: %j', async (response) => {
+    vi.mocked(outbox.publish).mockResolvedValue(response);
+    const store = createFeedBuilderStore();
+    store.init(SIGNING_PUBKEY);
+    await expect(store.save({ name: 'morning', filters: [{ kinds: [1] }], relays: [] })).rejects.toThrow();
+    expect(store.state.entities).toEqual([]);
+    expect(store.state.lastSavedAddress).toBeNull();
+    expect(store.state.publishing).toBe(false);
+    expect(store.state.error).toBeTruthy();
+    expect(relay.publish).not.toHaveBeenCalled();
+  });
+
+  it('surfaces outbox transport errors and clears the publishing state', async () => {
+    vi.mocked(outbox.publish).mockRejectedValue(new Error('outbox unavailable'));
+    const store = createFeedBuilderStore();
+    store.init(SIGNING_PUBKEY);
+    await expect(store.save({ name: 'morning', filters: [{ kinds: [1] }], relays: [] })).rejects.toThrow('outbox unavailable');
+    expect(store.state.entities).toEqual([]);
+    expect(store.state.publishing).toBe(false);
+    expect(store.state.error).toBe('outbox unavailable');
   });
 
   it('refuses to save an invalid name', async () => {
@@ -492,19 +545,39 @@ describe('store', () => {
       onEvent = ev as (result: { event: NostrEvent }) => void;
       return { close: vi.fn() };
     });
-    vi.mocked(relay.publish).mockResolvedValue(makeEvent({ kind: 5 }));
+    const saved = signedEntity('x');
+    const address = `${KIND_FILTER_FEED}:${SIGNING_PUBKEY}:x`;
+    vi.mocked(outbox.publish).mockResolvedValue({ ok: true, event: finalizeEvent({
+      ...buildDeleteTemplate(address), created_at: 1_700_000_008,
+    }, SIGNING_KEY) });
     const store = createFeedBuilderStore();
-    store.init(PUBKEY_A);
-    const enc = encodeEntity([{ kinds: [1] }], []).encoded;
-    onEvent!({ event: makeEvent({ created_at: 5, content: enc, tags: [['d', 'x']] }) });
-    const address = `${KIND_FILTER_FEED}:${PUBKEY_A}:x`;
+    store.init(SIGNING_PUBKEY);
+    onEvent!({ event: saved });
 
     await store.remove(address);
 
-    expect(relay.publish).toHaveBeenCalledWith(expect.objectContaining({
+    expect(outbox.publish).toHaveBeenCalledWith(expect.objectContaining({
       kind: 5,
       tags: [['a', address]],
     }));
+    expect(relay.publish).not.toHaveBeenCalled();
     expect(store.state.entities).toHaveLength(0);
+  });
+
+  it.each(['result', 'rejection'])('keeps the saved entity when outbox deletion fails by %s', async (failure) => {
+    const event = signedEntity('x');
+    vi.mocked(relay.subscribe).mockImplementation((_filters, onEvent) => {
+      onEvent({ event });
+      return { close: vi.fn() };
+    });
+    if (failure === 'result') vi.mocked(outbox.publish).mockResolvedValue({ ok: false, error: 'delete denied' });
+    else vi.mocked(outbox.publish).mockRejectedValue(new Error('delete denied'));
+    const store = createFeedBuilderStore();
+    store.init(SIGNING_PUBKEY);
+    const address = `${KIND_FILTER_FEED}:${SIGNING_PUBKEY}:x`;
+    await expect(store.remove(address)).rejects.toThrow('delete denied');
+    expect(store.state.entities.map(entity => entity.address)).toEqual([address]);
+    expect(store.state.error).toBe('delete denied');
+    expect(relay.publish).not.toHaveBeenCalled();
   });
 });

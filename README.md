@@ -4,46 +4,40 @@
 > Do not push commits to this standalone napplet repository; direct changes are overwritten by Hyprgate's mirror workflow.
 <!-- HYPRGATE NAPPLET MIRROR NOTICE:END -->
 
-# napplet-feed-builder
+# Feed Manager
 
-[![CI](https://github.com/hyprgate/napplet-feed-builder/actions/workflows/ci.yml/badge.svg)](https://github.com/hyprgate/napplet-feed-builder/actions/workflows/ci.yml)
+A sandboxed NIP-5D app for authoring saved Nostr filters and feeds. Its source is
+tracked in this workspace at `napplets/feed-builder`; the standalone
+`hyprgate/napplet-feed-builder` repository is a generated read-only mirror.
 
-Forkable source repository for the Hyprgate built-in napplet currently packaged as `@hyprgate/napp-feed-builder`.
+Saving kind-39823 records and publishing kind-5 deletion requests use
+`@napplet/sdk`'s `outbox.publish`. The shell owns signing and NIP-65 write-relay
+selection. Relay pins entered in the feed editor are encoded into the saved
+`nfeed` content; they do not override the publishing route. Save retains the
+signed event returned by OUTBOX, and failed publishes leave local records intact.
+The manifest requires `outbox` for these writes and `relay` for the existing
+saved-record and suggestion reads.
 
-This repository was split from `hyprgate/gui` and is mounted back into the parent checkout as `napplets/feed-builder`.
-It still expects the parent workspace when built through Hyprgate because shared `@hyprgate/*` packages remain workspace dependencies.
+Run from the Hyprgate workspace root:
 
-## Parent checkout
-
-```bash
-git clone --recurse-submodules git@github.com:hyprgate/gui.git
-cd gui
+```sh
 pnpm install --frozen-lockfile
-pnpm --filter @hyprgate/napp-feed-builder build
+pnpm --filter ./napplets/feed-builder paja
 ```
 
-## Paja runtime
+Focused checks:
 
-```bash
-pnpm --filter @hyprgate/napp-feed-builder paja
+```sh
+pnpm --filter ./napplets/feed-builder exec vitest run --maxWorkers=1
+pnpm --filter ./napplets/feed-builder type-check
+pnpm --filter ./napplets/feed-builder build
+pnpm --filter ./napplets/feed-builder conformance
 ```
 
-This starts Kehto Paja and the napplet's Vite dev server together, using
-the port configured in `vite.config.ts`.
-
-## Testing
-
-Run these checks from a Hyprgate parent checkout so workspace dependencies resolve:
-
-```bash
-git clone --recurse-submodules git@github.com:hyprgate/gui.git
-cd gui
-pnpm install --frozen-lockfile
-pnpm --filter @hyprgate/napp-feed-builder conformance
-pnpm --filter @hyprgate/napp-feed-builder test
-pnpm --filter @hyprgate/napp-feed-builder build
-```
-
-The `conformance` script builds the napplet and runs `@napplet/conformance-cli` against `dist/`. CI runs the same conformance, unit test, and build checks for every push and pull request.
-
-CI runs from the standalone napplet repository but checks out `hyprgate/gui` to resolve private `workspace:*` packages. Configure `HYPRGATE_GUI_CHECKOUT_TOKEN` with read access to `hyprgate/gui` before enabling GitHub Actions.
+With `@napplet/conformance` 0.20.1 / CLI 0.3.4, the directory scan flags the
+`fetch` reference in Vite 8's modulepreload helper, including in the unchanged
+baseline. The single-file artifact has no external script or preload links to
+invoke that helper. Boot, sandbox, envelope, and domain-absence checks pass;
+manifest checks are skipped because this CLI does not resolve the generated
+`.nip5a-manifest.json`. Verify the final deploy template and signed manifest
+separately; do not report this conformance run as fully passing.

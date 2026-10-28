@@ -1,5 +1,5 @@
 import type { NostrEvent } from '@hyprgate/types';
-import { relay, type Subscription } from '@napplet/sdk';
+import { outbox, relay, type Subscription } from '@napplet/sdk';
 import * as nip19 from 'nostr-tools/nip19';
 import type { Filter } from 'nostr-tools/filter';
 import { encodeNfeed, encodeNfilter, encodeNfilters } from '@sandwichfarm/encoded-entities';
@@ -464,19 +464,12 @@ async function save(ctx: FeedBuilderContext, input: SaveInput): Promise<SaveResu
   ctx.notify();
   try {
     const createdAt = Math.floor(Date.now() / 1000);
-    const published = (await relay.publish({ ...template, created_at: createdAt })) as NostrEvent;
-    const pubkey = published?.pubkey || ctx.state.pubkey;
-    const stored: NostrEvent = {
-      id: published?.id ?? '',
-      sig: published?.sig ?? '',
-      kind: KIND_FILTER_FEED,
-      pubkey,
-      created_at: createdAt,
-      content: encoded,
-      tags: template.tags,
-    };
+    const published = await outbox.publish({ ...template, created_at: createdAt });
+    if (!published.ok) throw new Error(published.error ?? 'Failed to save');
+    if (!published.event) throw new Error('No signed event returned after publishing');
+    const stored = published.event;
     rememberEvent(ctx, stored);
-    const address = `${KIND_FILTER_FEED}:${pubkey}:${input.name}`;
+    const address = `${KIND_FILTER_FEED}:${stored.pubkey}:${input.name}`;
     ctx.state.lastSavedAddress = address;
     recompute(ctx);
     return { address, event: stored };
@@ -493,7 +486,8 @@ async function save(ctx: FeedBuilderContext, input: SaveInput): Promise<SaveResu
 async function remove(ctx: FeedBuilderContext, address: string): Promise<void> {
   ctx.state.error = null;
   try {
-    await relay.publish({ ...buildDeleteTemplate(address), created_at: Math.floor(Date.now() / 1000) });
+    const published = await outbox.publish({ ...buildDeleteTemplate(address), created_at: Math.floor(Date.now() / 1000) });
+    if (!published.ok) throw new Error(published.error ?? 'Failed to delete');
     ctx.events.delete(address);
     recompute(ctx);
   } catch (error) {
