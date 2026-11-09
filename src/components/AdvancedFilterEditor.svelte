@@ -1,16 +1,17 @@
 <script lang="ts">
   import TagInput from './TagInput.svelte';
   import { pubkeysFromInputs, type AdvFilter } from '../lib/filters';
-  import { searchAuthorSuggestions } from '../lib/author-suggestions';
+  import { searchAuthorSuggestions, searchFollowSuggestions } from '../lib/author-suggestions';
 
   interface Props {
     filter: AdvFilter;
     onchange: (filter: AdvFilter) => void;
     onremove?: () => void;
     label: string;
+    nameFor?: (pubkey: string) => string;
   }
 
-  let { filter, onchange, onremove, label }: Props = $props();
+  let { filter, onchange, onremove, label, nameFor }: Props = $props();
 
   const HEX64 = /^[0-9a-f]{64}$/i;
 
@@ -66,8 +67,10 @@
     </span>
     <TagInput
       values={filter.authors}
-      placeholder="pubkey (hex) — npub / nprofile also accepted"
-      mono
+      label="Authors"
+      placeholder="Search by name, or paste an npub or hex key…"
+      suggestNow={searchFollowSuggestions}
+      chipLabel={(value) => { const pubkey = pubkeysFromInputs([value]).pubkeys[0]; return pubkey && nameFor ? nameFor(pubkey) : value; }}
       onchange={(authors) => update({ authors })}
       transform={(v) => pubkeysFromInputs([v]).pubkeys[0] ?? v}
       suggest={searchAuthorSuggestions}

@@ -1,8 +1,9 @@
 <script lang="ts">
   import { identity, intent } from '@napplet/sdk';
   import { parseIntentResult } from '@hyprgate/types';
-  import { invokeNappletIntent, createFeedIntentRequest, nfeedToFeedPayload } from '@hyprgate/utils';
+  import { invokeNappletIntent, createFeedIntentRequest, createProfileIntentRequest, nfeedToFeedPayload, pubkeyColorStyle } from '@hyprgate/utils';
   import type { Filter } from 'nostr-tools/filter';
+  import { npubEncode } from 'nostr-tools/nip19';
   import {
     advToFilter,
     canRepresentAsBasic,
@@ -27,6 +28,9 @@
   import AdvancedFilterEditor from './components/AdvancedFilterEditor.svelte';
   import TagInput from './components/TagInput.svelte';
   import { searchRelaySuggestions } from './lib/relay-suggestions';
+  import { describeFilters } from './lib/filter-summary';
+  import { relativeTime, watchMatches, type MatchPreviewState } from './lib/match-preview';
+  import { createPeopleDirectory } from './lib/people';
 
   let version = $state(0);
   const store = createFeedBuilderStore(() => (version += 1));
@@ -56,6 +60,35 @@
   let jsonText = $state('[\n  {}\n]');
   let selectedAddress = $state<string | null>(null);
   let status = $state<string | null>(null);
+  let statusIsError = $state(false);
+  let confirmingDelete = $state<string | null>(null);
+  let matches = $state<MatchPreviewState | null>(null);
+
+  let peopleVersion = $state(0);
+  const peopleDirectory = createPeopleDirectory(() => (peopleVersion += 1));
+
+  function nameFor(pubkey: string): string {
+    peopleVersion;
+    return peopleDirectory.nameFor(pubkey);
+  }
+
+  function openProfile(pubkey: string): void {
+    const request = createProfileIntentRequest({ pubkey });
+    if (request) void invokeNappletIntent(request).catch(() => {});
+  }
+
+  function friendlyError(error: unknown, fallback: string): string {
+    const reason = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+    if (/read.?only/i.test(reason)) {
+      return "This session is read-only, so it can't sign. Sign in with a key or a signer to save.";
+    }
+    return reason || fallback;
+  }
+
+  function setStatus(message: string | null, isError = false): void {
+    status = message;
+    statusIsError = isError;
+  }
 
   function emptyBlock(): BasicBlock {
     return { kinds: [], authors: [], hashtags: [] };
@@ -98,18 +131,18 @@
         return { filters: [], relays: effRelays, error: v.errors[0] ?? 'Invalid filters' };
       }
       const filters = v.filters.filter((f) => !isFilterEmpty(f));
-      if (filters.length === 0) return { filters, relays: effRelays, error: 'Add at least one filter constraint' };
+      if (filters.length === 0) return { filters, relays: effRelays, error: 'Choose at least one thing to show, an author or a hashtag.' };
       return { filters, relays: effRelays, error: null };
     }
     const invalidAuthors = invalidAuthorInputs();
     if (invalidAuthors.length > 0) {
-      return { filters: [], relays: effRelays, error: `Invalid pubkey: ${invalidAuthors[0]}` };
+      return { filters: [], relays: effRelays, error: `"${invalidAuthors[0]}" isn't a key we recognize. Pick a person from the list, or paste an npub.` };
     }
     const rawFilters = view === 'advanced'
       ? advFilters.map(advToFilter)
       : (mode === 'feed' ? blocks : blocks.slice(0, 1)).map(blockToFilter);
     const filters = rawFilters.map(sanitizeFilter).filter((f) => !isFilterEmpty(f));
-    if (filters.length === 0) return { filters, relays: effRelays, error: 'Add at least one filter constraint' };
+    if (filters.length === 0) return { filters, relays: effRelays, error: 'Choose at least one thing to show, an author or a hashtag.' };
     return { filters, relays: effRelays, error: null };
   });
 
@@ -124,6 +157,15 @@
 
   const nameValid = $derived(isValidName(name));
   const nameCollision = $derived(snap.entities.some((e) => e.identifier === name && e.address !== selectedAddress));
+  const saveBlocker = $derived(
+    snap.publishing ? null
+    : built.error ? built.error
+    : !name.trim() ? 'Give it a name to save it.'
+    : !nameValid ? 'Names use letters, digits and symbols, with no spaces.'
+    : null,
+  );
+  const summary = $derived(built.error ? '' : describeFilters(built.filters, nameFor));
+  const selectedEntity = $derived(snap.entities.find((entity) => entity.address === selectedAddress) ?? null);
   const canSave = $derived(!snap.publishing && nameValid && !built.error && built.filters.length > 0);
 
   // Collect the active view's filters as plain NIP-01 filters, for converting
@@ -163,7 +205,7 @@
     const filters = currentFilters();
     if (next === 'basic') {
       if (!canRepresentAsBasic(filters)) {
-        status = 'Basic view cannot represent these filters without dropping constraints';
+        setStatus('Basic view would drop some of these filters. Stay in Advanced or JSON to keep them.');
         return;
       }
       blocks = filters.length > 0 ? filters.map(filterToBlock) : [emptyBlock()];
@@ -192,7 +234,8 @@
     blocks = [emptyBlock()];
     advFilters = [emptyAdvFilter()];
     jsonText = '[\n  {}\n]';
-    status = null;
+    setStatus(null);
+    store.clearError();
   }
 
   function loadEntity(entity: SavedEntity): void {
@@ -203,7 +246,8 @@
     mode = entity.relays.length > 0 || entity.filters.length > 1 ? 'feed' : 'filter';
     loadFilters(entity.filters);
     view = preferredViewForFilters(entity.filters);
-    status = null;
+    setStatus(null);
+    store.clearError();
   }
 
   function addBlock(): void {
@@ -229,25 +273,34 @@
   }
 
   async function save(): Promise<void> {
-    status = null;
+    setStatus(null);
     try {
       const result = await store.save({ name, filters: built.filters, relays: built.relays });
       selectedAddress = result.address;
       nameTouched = true;
-      status = `Saved “${name}”`;
+      setStatus(`Saved “${name}”`);
     } catch (error) {
-      status = error instanceof Error ? error.message : 'Save failed';
+      // Shown here, so the store's copy of it doesn't linger across other drafts.
+      store.clearError();
+      setStatus(friendlyError(error, "Couldn't save this."), true);
     }
   }
 
   async function del(entity: SavedEntity, e: MouseEvent): Promise<void> {
     e.stopPropagation();
+    // Deleting publishes a kind-5 request that can't be taken back, so it takes two steps.
+    if (confirmingDelete !== entity.address) {
+      confirmingDelete = entity.address;
+      return;
+    }
+    confirmingDelete = null;
     try {
       await store.remove(entity.address);
       if (selectedAddress === entity.address) newEntity();
-      status = `Deleted “${entity.identifier}”`;
+      setStatus(`Deleted “${entity.identifier}”`);
     } catch (error) {
-      status = error instanceof Error ? error.message : 'Delete failed';
+      store.clearError();
+      setStatus(friendlyError(error, "Couldn't delete this."), true);
     }
   }
 
@@ -265,28 +318,28 @@
    * a dedicated feed window. Gated behind shell.ready() + supports('intent')
    * (Phase 87 supports-gate) so it degrades gracefully when intent is absent.
    */
-  async function openFeed(entity: SavedEntity, e: MouseEvent): Promise<void> {
+  async function openFeed(entity: SavedEntity, e: Event): Promise<void> {
     e.stopPropagation();
     const shell = getShell();
     try {
       await shell?.ready();
       if (!shell?.supports('intent')) {
-        status = 'Opening feeds is not supported by this shell';
+        setStatus('Opening feeds is not supported here.', true);
         return;
       }
       const request = createFeedIntentRequest(nfeedToFeedPayload(entity));
       if (!request) {
-        status = 'Open feed request is invalid';
+        setStatus("This one can't be opened as a feed.", true);
         return;
       }
       const result = parseIntentResult(await invokeNappletIntent(request));
       if (!result || result.archetype !== request.archetype || result.action !== (request.action ?? 'open') || !result.ok) {
-        status = 'Opening feeds is not supported by this shell';
+        setStatus('Opening feeds is not supported here.', true);
         return;
       }
-      status = `Opening “${entity.identifier}”`;
+      setStatus(`Opening “${entity.identifier}”`);
     } catch (error) {
-      status = error instanceof Error ? error.message : 'Open feed failed';
+      setStatus(friendlyError(error, "Couldn't open this feed."), true);
     }
   }
 
@@ -294,9 +347,9 @@
     if (!preview) return;
     try {
       await navigator.clipboard.writeText(preview.encoded);
-      status = 'Copied to clipboard';
+      setStatus('Copied');
     } catch {
-      status = 'Copy failed';
+      setStatus("Couldn't copy.", true);
     }
   }
 
@@ -306,10 +359,43 @@
         const pubkey = await identity.getPublicKey();
         store.init(pubkey);
       } catch (error) {
-        status = error instanceof Error ? error.message : 'Could not load identity';
+        setStatus(friendlyError(error, "Couldn't load your identity."), true);
       }
     })();
-    return () => store.destroy();
+    return () => {
+      store.destroy();
+      peopleDirectory.destroy();
+    };
+  });
+
+  // Names for everyone on screen: saved rows, draft authors and preview matches.
+  $effect(() => {
+    const pubkeys = [
+      ...snap.entities.flatMap((entity) => entity.filters.flatMap((filter) => filter.authors ?? [])),
+      ...built.filters.flatMap((filter) => filter.authors ?? []),
+      ...blocks.flatMap((block) => pubkeysFromInputs(block.authors).pubkeys),
+      ...advFilters.flatMap((filter) => pubkeysFromInputs(filter.authors).pubkeys),
+      ...(matches?.latest.map((event) => event.pubkey) ?? []),
+    ];
+    peopleDirectory.watch(pubkeys);
+  });
+
+  const filtersKey = $derived(built.error ? '' : JSON.stringify(built.filters));
+  $effect(() => {
+    const key = filtersKey;
+    matches = null;
+    if (!key) return;
+    const filters = JSON.parse(key) as Filter[];
+    let subscription: { close(): void } | null = null;
+    // Wait for typing to pause, so each keystroke doesn't open a subscription.
+    const timer = setTimeout(() => {
+      matches = { count: 0, latest: [], settled: false };
+      subscription = watchMatches(filters, (next) => { matches = next; });
+    }, 400);
+    return () => {
+      clearTimeout(timer);
+      subscription?.close();
+    };
   });
 </script>
 
@@ -317,63 +403,66 @@
   <aside class="rail">
     <header class="rail-head">
       <h1>Feeds &amp; Filters</h1>
-      {#if snap.loading}<span class="muted">loading…</span>{/if}
+      {#if snap.loading}<span class="muted">Loading...</span>{/if}
     </header>
     <button type="button" class="new-btn" class:active={selectedAddress === null} onclick={newEntity}>＋ New</button>
     <div class="saved-list">
       {#if snap.entities.length === 0 && snap.loaded}
-        <p class="empty">No saved filters yet. Build one and save it.</p>
+        <p class="empty">Nothing saved yet. What you save shows up here, ready to open as a timeline.</p>
       {/if}
       {#each snap.entities as entity (entity.address)}
         <div class="saved-item" class:active={selectedAddress === entity.address}>
           <button type="button" class="saved-open" onclick={() => loadEntity(entity)}>
             <span class="saved-main">
               <span class="saved-name" title={entity.identifier}>{entity.identifier}</span>
-              <span class="badge badge-{entity.type}">{entity.type}</span>
             </span>
             <span class="saved-meta">
-              {entity.filters.length} filter{entity.filters.length === 1 ? '' : 's'}{#if entity.relays.length} · {entity.relays.length} relay{entity.relays.length === 1 ? '' : 's'}{/if}
+              {describeFilters(entity.filters, nameFor)}{entity.relays.length ? ` · ${entity.relays.length} ${entity.relays.length === 1 ? 'relay' : 'relays'}` : ''}
             </span>
           </button>
-          <button type="button" class="saved-open-feed" aria-label={`Open ${entity.identifier} as feed`} title="Open as live feed" onclick={(e) => openFeed(entity, e)}>▶</button>
-          <button type="button" class="saved-del" aria-label={`Delete ${entity.identifier}`} onclick={(e) => del(entity, e)}>✕</button>
+          <div class="saved-actions">
+            <button type="button" class="saved-action" aria-label={`Open ${entity.identifier} as feed`} title="Open as a timeline" onclick={(e) => openFeed(entity, e)}>Open</button>
+            <button
+              type="button"
+              class="saved-action danger"
+              class:armed={confirmingDelete === entity.address}
+              aria-label={confirmingDelete === entity.address ? `Confirm deleting ${entity.identifier}` : `Delete ${entity.identifier}`}
+              onclick={(e) => del(entity, e)}
+              onblur={() => { if (confirmingDelete === entity.address) confirmingDelete = null; }}
+            >{confirmingDelete === entity.address ? 'Really delete?' : 'Delete'}</button>
+          </div>
         </div>
       {/each}
     </div>
   </aside>
 
   <section class="editor">
+    <p class="intro">Choose what to show and who from. Save it and it's ready to open as a timeline.</p>
+
     <div class="toolbar">
-      <div class="seg" role="tablist" aria-label="View">
+      <div class="seg" role="group" aria-label="Editor">
         <button
           type="button"
-          role="tab"
           class:active={view === 'basic'}
+          aria-pressed={view === 'basic'}
           disabled={!basicAvailable}
-          aria-disabled={!basicAvailable}
-          title={basicAvailable ? 'Basic view' : 'Advanced-only filters cannot be represented in Basic'}
+          title={basicAvailable ? 'Choose from common options' : 'These filters need Advanced or JSON'}
           onclick={() => switchView('basic')}
         >Basic</button>
-        <button type="button" role="tab" class:active={view === 'advanced'} onclick={() => switchView('advanced')}>Advanced</button>
-        <button type="button" role="tab" class:active={view === 'json'} onclick={() => switchView('json')}>JSON</button>
+        <button type="button" class:active={view === 'advanced'} aria-pressed={view === 'advanced'} onclick={() => switchView('advanced')}>Advanced</button>
+        <button type="button" class:active={view === 'json'} aria-pressed={view === 'json'} onclick={() => switchView('json')}>JSON</button>
       </div>
       {#if view === 'basic'}
-        <div class="seg" role="tablist" aria-label="Kind of entity">
-          <button type="button" role="tab" class:active={mode === 'filter'} onclick={() => setMode('filter')}>Single filter</button>
-          <button type="button" role="tab" class:active={mode === 'feed'} onclick={() => setMode('feed')}>Feed / collection</button>
+        <div class="seg" role="group" aria-label="How many filters">
+          <button type="button" class:active={mode === 'filter'} aria-pressed={mode === 'filter'} title="One filter" onclick={() => setMode('filter')}>One filter</button>
+          <button type="button" class:active={mode === 'feed'} aria-pressed={mode === 'feed'} title="Combine several filters, and optionally pin relays" onclick={() => setMode('feed')}>Several, or pinned relays</button>
         </div>
-      {/if}
-      <div class="spacer"></div>
-      {#if preview}
-        <span class="type-indicator" title={preview.encoded}>
-          will save as <strong>{preview.type}</strong>
-        </span>
       {/if}
     </div>
 
     <div class="name-row">
       <label class="name-field">
-        <span class="field-label">Name <span class="muted">(the d-tag — no spaces)</span></span>
+        <span class="field-label">Name</span>
         <input
           value={name}
           placeholder="morning-reads"
@@ -381,28 +470,31 @@
           autocapitalize="off"
           autocomplete="off"
           class:bad={nameTouched && !nameValid}
-          oninput={(e) => { nameTouched = true; name = (e.currentTarget as HTMLInputElement).value; }}
+          oninput={(e) => { nameTouched = true; name = (e.currentTarget as HTMLInputElement).value.replace(/\s+/g, '-'); }}
         />
       </label>
       <div class="name-hints">
         {#if nameTouched && !nameValid}
-          <span class="bad">No spaces; letters, digits and symbols only.</span>
+          <span class="bad">Letters, digits and symbols only.</span>
         {:else if nameCollision}
-          <span class="warn">A filter named “{name}” exists — saving replaces it.</span>
+          <span class="warn">You already have “{name}”. Saving replaces it.</span>
         {/if}
       </div>
     </div>
 
+    <div class="workbench">
     <div class="body">
       {#if view === 'basic'}
         {#if mode === 'filter'}
-          <FilterEditor block={blocks[0]} onchange={(b) => updateBlock(0, b)} />
+          <FilterEditor block={blocks[0]} {nameFor} onopenprofile={openProfile} onchange={(b) => updateBlock(0, b)} />
         {:else}
           {#each blocks as block, i (i)}
             <div class="block-card">
               <FilterEditor
                 {block}
                 label={`Filter ${i + 1}`}
+                {nameFor}
+                onopenprofile={openProfile}
                 onchange={(b) => updateBlock(i, b)}
                 onremove={blocks.length > 1 ? () => removeBlock(i) : undefined}
               />
@@ -415,6 +507,7 @@
           <AdvancedFilterEditor
             {filter}
             label={`Filter #${i + 1}`}
+            {nameFor}
             onchange={(f) => updateAdvFilter(i, f)}
             onremove={advFilters.length > 1 ? () => removeAdvFilter(i) : undefined}
           />
@@ -441,7 +534,7 @@
 
       {#if relaysVisible}
         <div class="field relays-field">
-          <span class="field-label">Relays <span class="muted">(optional — adding any makes this an nfeed)</span></span>
+          <span class="field-label">Relays <span class="muted">(optional: only read from these)</span></span>
           <TagInput
             values={relays}
             placeholder="wss://relay.example…"
@@ -457,20 +550,52 @@
       {/if}
     </div>
 
+    <aside class="matches" aria-label="What this matches">
+      <h2>What this matches</h2>
+      {#if summary}
+        <p class="summary">{summary}{#if built.relays.length > 0}, only from {built.relays.length} {built.relays.length === 1 ? 'relay' : 'relays'}{/if}</p>
+        {#if matches === null || (!matches.settled && matches.count === 0)}
+          <p class="muted" role="status">Looking on your relays...</p>
+        {:else if matches.count === 0}
+          <p class="muted" role="status">Nothing on your relays right now. New matches will show up in the timeline.</p>
+        {:else}
+          <p class="muted" role="status">{matches.count} found so far{matches.settled ? '' : '...'}</p>
+          <ul class="match-list">
+            {#each matches.latest as match (match.id)}
+              <li>
+                <div class="match-head">
+                  <button type="button" class="match-author" style={pubkeyColorStyle(match.pubkey)} title={npubEncode(match.pubkey)} onclick={() => openProfile(match.pubkey)}>{nameFor(match.pubkey)}</button>
+                  <span class="muted">{relativeTime(match.created_at)}</span>
+                </div>
+                <p class="match-text">{match.content || `Event kind ${match.kind}`}</p>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {:else}
+        <p class="muted">Pick something to show and you'll see what it finds here, before you save.</p>
+      {/if}
+    </aside>
+    </div>
+
     <footer class="actions">
+      <button type="button" class="save" disabled={!canSave} onclick={save}>
+        {#if snap.publishing}Saving...{:else if selectedAddress}Update{:else}Save{/if}
+      </button>
+      {#if selectedEntity}
+        <button type="button" class="secondary-btn" onclick={(e) => openFeed(selectedEntity, e)}>Open as timeline</button>
+      {/if}
       <div class="status" aria-live="polite">
-        {#if snap.error}<span class="bad">{snap.error}</span>
-        {:else if built.error && (nameTouched || view !== 'basic')}<span class="muted">{built.error}</span>
-        {:else if status}<span class:bad={status.toLowerCase().includes('fail')}>{status}</span>{/if}
+        {#if snap.error}<span class="bad">{friendlyError(snap.error, snap.error)}</span>
+        {:else if status && statusIsError}<span class="bad">{status}</span>
+        {:else if saveBlocker}<span class="muted">{saveBlocker}</span>
+        {:else if status}<span>{status}</span>{/if}
       </div>
       {#if preview}
-        <button type="button" class="preview-btn" onclick={copyEncoded} title="Copy encoded entity">
-          {preview.encoded.slice(0, 14)}… ⧉
+        <button type="button" class="preview-btn" onclick={copyEncoded} title={preview.encoded}>
+          Copy {preview.type}
         </button>
       {/if}
-      <button type="button" class="save" disabled={!canSave} onclick={save}>
-        {#if snap.publishing}Saving…{:else if selectedAddress}Update{:else}Save{/if}
-      </button>
     </footer>
   </section>
 </main>
@@ -485,9 +610,192 @@
 
   main {
     display: grid;
-    grid-template-columns: 240px 1fr;
+    grid-template-columns: 240px minmax(0, 1fr);
     height: 100vh;
     box-sizing: border-box;
+  }
+
+  main :global(button:focus-visible),
+  main :global(summary:focus-visible) {
+    outline: 2px solid var(--hg-accent-focus, var(--hg-accent-primary, #82d8f7));
+    outline-offset: 1px;
+  }
+
+  @media (max-width: 640px) {
+    main {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    main .rail {
+      max-height: 26vh;
+      overflow-y: auto;
+      border-right: 0;
+      border-bottom: 1px solid var(--hg-border-muted, #242424);
+    }
+  }
+
+  .intro {
+    margin: 0;
+    color: var(--hg-text-secondary, #c8c2b5);
+    font-size: 13px;
+  }
+
+  .workbench {
+    display: grid;
+    flex: 1;
+    gap: 16px;
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  @media (max-width: 959px) {
+    main .editor {
+      overflow-y: auto;
+    }
+
+    main .workbench,
+    main .body {
+      flex: none;
+      overflow: visible;
+    }
+
+    main .actions {
+      position: sticky;
+      bottom: -14px;
+      z-index: 3;
+      flex-wrap: wrap;
+      margin: 0 -16px -14px;
+      padding: 8px 16px;
+      background: var(--hg-bg-base, #050505);
+      border-top: 1px solid var(--hg-border-muted, #242424);
+    }
+  }
+
+  @media (min-width: 960px) {
+    .workbench {
+      grid-template-columns: minmax(0, 1fr) 320px;
+      overflow: hidden;
+    }
+
+    .workbench .matches {
+      overflow-y: auto;
+      padding-left: 16px;
+      border-top: 0;
+      border-left: 1px solid var(--hg-border-muted, #242424);
+    }
+  }
+
+  .matches {
+    min-width: 0;
+    padding-top: 10px;
+    border-top: 1px solid var(--hg-border-muted, #242424);
+    font-size: 12px;
+  }
+
+  .matches h2 {
+    margin: 0 0 6px;
+    color: var(--hg-text-muted, #b8b1a4);
+    font-size: 11px;
+    font-weight: 400;
+  }
+
+  .matches p {
+    margin: 0 0 8px;
+  }
+
+  .summary {
+    color: var(--hg-text-primary, #f2efe7);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  .match-list {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .match-list li {
+    padding: 8px 0;
+    border-top: 1px solid var(--hg-border-muted, #242424);
+  }
+
+  .match-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .match-author {
+    min-width: 0;
+    overflow: hidden;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .match-author:hover {
+    text-decoration: underline;
+  }
+
+  .match-text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+    margin: 2px 0 0 !important;
+    color: var(--hg-text-secondary, #c8c2b5);
+    overflow-wrap: anywhere;
+  }
+
+  .saved-actions {
+    display: flex;
+    gap: 4px;
+    padding: 0 6px 6px;
+  }
+
+  .saved-action {
+    padding: 2px 6px;
+    border: 1px solid var(--hg-border, #303030);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--hg-text-muted, #b8b1a4);
+    cursor: pointer;
+    font: inherit;
+    font-size: 10px;
+  }
+
+  .saved-action:hover {
+    color: var(--hg-text-primary, #f2efe7);
+  }
+
+  .saved-action.danger.armed,
+  .saved-action.danger:hover {
+    border-color: var(--hg-accent-red, #ff6b6b);
+    color: var(--hg-accent-red, #ff6b6b);
+  }
+
+  .secondary-btn {
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--hg-border, #303030);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--hg-text-primary, #f2efe7);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
   }
 
   .rail {
@@ -570,51 +878,10 @@
     white-space: nowrap;
     font-size: 12px;
   }
-  .badge {
-    flex-shrink: 0;
-    padding: 1px 6px;
-    border-radius: 8px;
-    font-size: 9px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    background: var(--hg-bg-base, #050505);
-    color: var(--hg-text-muted, #b8b1a4);
-    border: 1px solid var(--hg-border-muted, #242424);
-  }
-  .badge-nfeed { color: var(--hg-accent-green, #9be564); border-color: var(--hg-accent-green, #9be564); }
-  .badge-nfilters { color: var(--hg-accent-cyan, #82d8f7); border-color: var(--hg-accent-cyan, #82d8f7); }
   .saved-meta {
     color: var(--hg-text-muted, #b8b1a4);
     font-size: 10px;
   }
-  .saved-del {
-    position: absolute;
-    top: 5px;
-    right: 5px;
-    padding: 2px 4px;
-    border: none;
-    background: none;
-    color: var(--hg-text-muted, #b8b1a4);
-    font: inherit;
-    font-size: 10px;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .saved-del:hover { color: var(--hg-accent-red, #ff6b6b); }
-  .saved-open-feed {
-    position: absolute;
-    top: 5px;
-    right: 22px;
-    padding: 2px 4px;
-    border: none;
-    background: none;
-    color: var(--hg-text-muted, #b8b1a4);
-    font: inherit;
-    font-size: 10px;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .saved-open-feed:hover { color: var(--hg-accent-green, #9be564); }
 
   .editor {
     display: flex;
@@ -629,7 +896,6 @@
     gap: 10px;
     flex-wrap: wrap;
   }
-  .spacer { flex: 1; }
   .seg {
     display: inline-flex;
     border: 1px solid var(--hg-border, #303030);
@@ -654,11 +920,6 @@
     cursor: not-allowed;
     opacity: 0.45;
   }
-  .type-indicator {
-    font-size: 11px;
-    color: var(--hg-text-muted, #b8b1a4);
-  }
-  .type-indicator strong { color: var(--hg-accent-green, #9be564); }
 
   .name-row {
     display: grid;
@@ -732,7 +993,7 @@
     align-items: center;
     gap: 10px;
   }
-  .status { flex: 1; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status { flex: 1; min-width: 0; font-size: 12px; }
   .preview-btn {
     padding: 6px 10px;
     border: 1px solid var(--hg-border, #303030);
@@ -747,14 +1008,20 @@
   .save {
     height: 32px;
     padding: 0 20px;
-    border: 1px solid var(--hg-accent-green, #9be564);
+    border: 1px solid var(--hg-accent-primary, #9be564);
     border-radius: 5px;
-    background: var(--hg-surface, #101010);
-    color: var(--hg-accent-green, #9be564);
+    background: var(--hg-accent-primary, #9be564);
+    color: var(--hg-bg-base, #050505);
     cursor: pointer;
     font: inherit;
     font-size: 12px;
+    font-weight: 600;
   }
-  .save:hover:not(:disabled) { background: var(--hg-accent-green, #9be564); color: var(--hg-bg-base, #050505); }
-  .save:disabled { opacity: 0.45; cursor: not-allowed; }
+  .save:hover:not(:disabled) { opacity: 0.88; }
+  .save:disabled {
+    border-color: var(--hg-border, #303030);
+    background: transparent;
+    color: var(--hg-text-muted, #b8b1a4);
+    cursor: not-allowed;
+  }
 </style>

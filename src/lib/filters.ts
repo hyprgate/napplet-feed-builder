@@ -377,6 +377,7 @@ export interface FeedBuilderStore {
   init(pubkey: string): void;
   save(input: SaveInput): Promise<SaveResult>;
   remove(address: string): Promise<void>;
+  clearError(): void;
   destroy(): void;
 }
 
@@ -518,6 +519,10 @@ export function createFeedBuilderStore(onUpdate?: () => void): FeedBuilderStore 
     init: (pubkey) => init(ctx, pubkey),
     save: (input) => save(ctx, input),
     remove: (address) => remove(ctx, address),
+    clearError: () => {
+      ctx.state.error = null;
+      ctx.notify();
+    },
     destroy: () => closeSubscriptions(ctx),
   };
 }

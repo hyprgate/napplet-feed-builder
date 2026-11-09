@@ -1,7 +1,7 @@
 <script lang="ts">
   import TagInput from './TagInput.svelte';
   import { pubkeysFromInputs } from '../lib/filters';
-  import { searchAuthorSuggestions } from '../lib/author-suggestions';
+  import { searchAuthorSuggestions, searchFollowSuggestions } from '../lib/author-suggestions';
 
   export interface BasicBlock {
     kinds: number[];
@@ -14,9 +14,11 @@
     onchange: (block: BasicBlock) => void;
     onremove?: () => void;
     label?: string;
+    nameFor?: (pubkey: string) => string;
+    onopenprofile?: (pubkey: string) => void;
   }
 
-  let { block, onchange, onremove, label }: Props = $props();
+  let { block, onchange, onremove, label, nameFor, onopenprofile }: Props = $props();
 
   // A small, curated palette of common kinds for one-tap selection.
   const COMMON_KINDS: { kind: number; label: string }[] = [
@@ -31,6 +33,13 @@
   ];
 
   const authorCheck = $derived(pubkeysFromInputs(block.authors));
+  const commonKinds = new Set(COMMON_KINDS.map((k) => k.kind));
+  // Common kinds are the buttons above; this field only holds the others.
+  const otherKinds = $derived(block.kinds.filter((kind) => !commonKinds.has(kind)).map(String));
+
+  function authorPubkey(value: string): string | null {
+    return pubkeysFromInputs([value]).pubkeys[0] ?? null;
+  }
 
   function toggleKind(kind: number): void {
     const kinds = block.kinds.includes(kind)
@@ -40,7 +49,7 @@
   }
 
   function setKindsFromText(values: string[]): void {
-    const kinds: number[] = [];
+    const kinds = block.kinds.filter((kind) => commonKinds.has(kind));
     for (const v of values) {
       const n = Number(v);
       if (Number.isInteger(n) && n >= 0 && !kinds.includes(n)) kinds.push(n);
@@ -60,20 +69,23 @@
   {/if}
 
   <div class="field">
-    <span class="field-label">Kinds</span>
+    <span class="field-label">Show</span>
     <div class="kind-palette">
       {#each COMMON_KINDS as k (k.kind)}
         <button
           type="button"
           class="kind-pill"
           class:active={block.kinds.includes(k.kind)}
+          aria-pressed={block.kinds.includes(k.kind)}
+          title={`Event kind ${k.kind}`}
           onclick={() => toggleKind(k.kind)}
-        >{k.label}<span class="kn">{k.kind}</span></button>
+        >{k.label}</button>
       {/each}
     </div>
     <TagInput
-      values={block.kinds.map(String)}
-      placeholder="add kind numbers…"
+      values={otherKinds}
+      label="Other event kinds, by number"
+      placeholder="Other kinds, by number…"
       onchange={setKindsFromText}
       invalid={(v) => !Number.isInteger(Number(v))}
     />
@@ -82,19 +94,19 @@
   <div class="field">
     <span class="field-label">
       Authors
-      {#if authorCheck.pubkeys.length > 0}
-        <span class="muted">{authorCheck.pubkeys.length} key{authorCheck.pubkeys.length === 1 ? '' : 's'}</span>
-      {/if}
       {#if authorCheck.invalid.length > 0}
-        <span class="bad">{authorCheck.invalid.length} unrecognized</span>
+        <span class="bad">{authorCheck.invalid.length} not recognized</span>
       {/if}
     </span>
     <TagInput
       values={block.authors}
-      placeholder="npub / nprofile / hex pubkey…"
-      mono
+      label="Authors"
+      placeholder="Search by name, or paste an npub…"
       onchange={(authors) => onchange({ ...block, authors })}
       suggest={searchAuthorSuggestions}
+      suggestNow={searchFollowSuggestions}
+      chipLabel={(value) => { const pubkey = authorPubkey(value); return pubkey && nameFor ? nameFor(pubkey) : value; }}
+      onchipopen={onopenprofile ? (value) => { const pubkey = authorPubkey(value); if (pubkey) onopenprofile(pubkey); } : undefined}
       invalid={(v) => pubkeysFromInputs([v]).pubkeys.length === 0}
     />
   </div>
@@ -103,6 +115,7 @@
     <span class="field-label">Hashtags</span>
     <TagInput
       values={block.hashtags}
+      label="Hashtags"
       placeholder="nostr, art, …"
       onchange={(hashtags) => onchange({ ...block, hashtags })}
       transform={(v) => v.replace(/^#/, '').toLowerCase()}
@@ -186,11 +199,8 @@
     background: var(--hg-accent-cyan, #82d8f7);
     color: var(--hg-bg-base, #050505);
   }
-  .kn {
-    opacity: 0.6;
-    font-size: 10px;
-  }
-  .kind-pill.active .kn {
-    opacity: 0.8;
+  .kind-pill:focus-visible {
+    outline: 2px solid var(--hg-accent-focus, var(--hg-accent-primary, #82d8f7));
+    outline-offset: 1px;
   }
 </style>

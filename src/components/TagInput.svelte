@@ -15,13 +15,21 @@
     onblurdraft?: (draft: string) => string;
     /** Optional async autosuggest provider for the current draft. */
     suggest?: (draft: string) => Promise<TagSuggestion[]>;
+    /** Optional instant suggestions, shown while `suggest` is still working. */
+    suggestNow?: (draft: string) => Promise<TagSuggestion[]>;
+    /** Accessible name for the input. */
+    label?: string;
+    /** Human name for a chip's value. The raw value stays as its tooltip. */
+    chipLabel?: (value: string) => string;
+    /** Opens a chip's value, e.g. the person's profile. */
+    onchipopen?: (value: string) => void;
     /** Optional per-chip validity flag — invalid chips get an error style. */
     invalid?: (value: string) => boolean;
     /** Render chips in a monospace/truncated style (for keys, relays). */
     mono?: boolean;
   }
 
-  let { values, placeholder, onchange, transform, onfocusdraft, onblurdraft, suggest, invalid, mono = false }: Props = $props();
+  let { values, placeholder, onchange, transform, onfocusdraft, onblurdraft, suggest, suggestNow, label, chipLabel, onchipopen, invalid, mono = false }: Props = $props();
   let draft = $state('');
   let suggestions = $state<TagSuggestion[]>([]);
   let activeSuggestion = $state(0);
@@ -29,22 +37,25 @@
 
   $effect(() => {
     const provider = suggest;
+    const instant = suggestNow;
     const query = draft;
-    if (!provider || query.trim().length < 2) {
+    if ((!provider && !instant) || query.trim().length < 2) {
       suggestions = [];
       activeSuggestion = 0;
       return;
     }
     const token = ++suggestSeq;
+    const merge = (next: TagSuggestion[]): void => {
+      if (token !== suggestSeq) return;
+      const known = new Set(suggestions.map((entry) => entry.value));
+      suggestions = [...suggestions, ...next.filter((entry) => !known.has(entry.value))].slice(0, 8);
+    };
     const timer = setTimeout(() => {
-      void provider(query).then((next) => {
-        if (token !== suggestSeq) return;
-        suggestions = next.slice(0, 8);
-        activeSuggestion = 0;
-      }).catch(() => {
-        if (token !== suggestSeq) return;
-        suggestions = [];
-      });
+      suggestions = [];
+      activeSuggestion = 0;
+      // A failed search leaves whatever the other source found.
+      void instant?.(query).then(merge).catch(() => {});
+      void provider?.(query).then(merge).catch(() => {});
     }, 180);
     return () => clearTimeout(timer);
   });
@@ -121,13 +132,18 @@
 <div class="taginput" class:mono>
   {#each values as value (value)}
     <span class="chip" class:invalid={invalid?.(value)}>
-      <span class="chip-text" title={value}>{value}</span>
-      <button type="button" class="chip-x" aria-label={`Remove ${value}`} onclick={() => remove(value)}>✕</button>
+      {#if onchipopen && !invalid?.(value)}
+        <button type="button" class="chip-text chip-open" title={value} onclick={() => onchipopen(value)}>{chipLabel?.(value) ?? value}</button>
+      {:else}
+        <span class="chip-text" title={value}>{chipLabel?.(value) ?? value}</span>
+      {/if}
+      <button type="button" class="chip-x" aria-label={`Remove ${chipLabel?.(value) ?? value}`} onclick={() => remove(value)}>✕</button>
     </span>
   {/each}
   <input
     bind:value={draft}
     {placeholder}
+    aria-label={label}
     {onkeydown}
     {onfocus}
     {onblur}
@@ -181,6 +197,17 @@
     border: 1px solid var(--hg-border-muted, #242424);
     font-size: 11px;
     color: var(--hg-text-primary, #f2efe7);
+  }
+  .chip-open {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+  }
+  .chip-open:hover {
+    text-decoration: underline;
   }
   .mono .chip-text {
     font-family: var(--hg-font-body, ui-monospace, monospace);

@@ -41,3 +41,15 @@ invoke that helper. Boot, sandbox, envelope, and domain-absence checks pass;
 manifest checks are skipped because this CLI does not resolve the generated
 `.nip5a-manifest.json`. Verify the final deploy template and signed manifest
 separately; do not report this conformance run as fully passing.
+
+## Building a feed
+
+The Basic view starts from what people want: what to show, from whom, with which
+hashtags. Authors can be searched by name. People you follow are matched from your
+own contact list right away, and Relatr adds wider results when it's reachable.
+
+"What this matches" says the draft in plain words and streams real matches from
+your relays before you save, so you can tell whether it does what you meant. It
+reads your general relays even when the draft pins others, so treat the count as a
+sample. Deleting a saved item takes two clicks, since the kind-5 request can't be
+taken back.

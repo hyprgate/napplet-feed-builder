@@ -1,6 +1,7 @@
-import { cvm, relay, type McpToolResult, type NostrEvent } from '@napplet/sdk';
+import { cvm, identity, relay, type McpToolResult, type NostrEvent } from '@napplet/sdk';
 import * as nip19 from 'nostr-tools/nip19';
 import type { TagSuggestion } from './tag-suggestions';
+import { profileName, shortNpub } from './people';
 
 const RELATR_SERVER = {
   pubkey: '750682303c9f0ddad75941b49edc9d46e3ed306b9ee3335338a21a3e404c5fa3',
@@ -81,11 +82,7 @@ function parseMetadata(event: NostrEvent): ProfileMetadata | null {
 }
 
 function displayName(pubkey: string, metadata: ProfileMetadata | null | undefined): string {
-  return metadata?.display_name?.trim()
-    || metadata?.displayName?.trim()
-    || metadata?.name?.trim()
-    || metadata?.nip05?.trim()
-    || `${pubkey.slice(0, 8)}...`;
+  return profileName(metadata) ?? shortNpub(pubkey);
 }
 
 async function loadMetadata(pubkeys: string[]): Promise<Map<string, ProfileMetadata>> {
@@ -105,7 +102,7 @@ export async function searchAuthorSuggestions(draft: string): Promise<TagSuggest
   if (query.length < 2) return [];
 
   const pubkey = directPubkey(query);
-  if (pubkey) return [{ value: pubkey, label: displayName(pubkey, null), detail: pubkey.slice(0, 12) }];
+  if (pubkey) return [{ value: pubkey, label: displayName(pubkey, null) }];
 
   const result = await cvm.callTool(
     RELATR_SERVER,
@@ -118,6 +115,44 @@ export async function searchAuthorSuggestions(draft: string): Promise<TagSuggest
   return candidates.map((candidate) => ({
     value: candidate.pubkey,
     label: displayName(candidate.pubkey, metadata.get(candidate.pubkey)),
-    detail: `trust ${Math.round(candidate.trustScore)} · ${candidate.pubkey.slice(0, 10)}`,
+    detail: `trust ${Math.round(candidate.trustScore)} · ${shortNpub(candidate.pubkey)}`,
   }));
+}
+
+let followDirectory: Promise<Array<{ pubkey: string; metadata: ProfileMetadata }>> | null = null;
+
+async function loadFollowDirectory(): Promise<Array<{ pubkey: string; metadata: ProfileMetadata }>> {
+  const self = await identity.getPublicKey();
+  const lists = await relay.query([{ kinds: [3], authors: [self] }]);
+  const newest = lists
+    .map((result) => result.event as NostrEvent)
+    .reduce<NostrEvent | null>((best, event) => (!best || event.created_at > best.created_at ? event : best), null);
+  const follows = [...new Set((newest?.tags ?? []).filter((tag) => tag[0] === 'p' && tag[1]).map((tag) => tag[1] as string))];
+  const metadata = await loadMetadata(follows);
+  return follows.flatMap((pubkey) => {
+    const entry = metadata.get(pubkey);
+    return entry ? [{ pubkey, metadata: entry }] : [];
+  });
+}
+
+/**
+ * People you already follow, matched by name. These come straight from relays, so
+ * they show up at once and still work when the Relatr search isn't reachable.
+ */
+export async function searchFollowSuggestions(draft: string): Promise<TagSuggestion[]> {
+  const query = draft.trim().replace(/^@/, '').toLowerCase();
+  if (query.length < 2 || directPubkey(query)) return [];
+  followDirectory ??= loadFollowDirectory().catch((error) => {
+    followDirectory = null;
+    throw error;
+  });
+  const directory = await followDirectory;
+  return directory
+    .filter(({ metadata }) => [metadata.display_name, metadata.displayName, metadata.name, metadata.nip05]
+      .some((value) => typeof value === 'string' && value.toLowerCase().includes(query)))
+    .map(({ pubkey, metadata }) => ({ value: pubkey, label: displayName(pubkey, metadata), detail: `you follow · ${shortNpub(pubkey)}` }));
+}
+
+export function resetFollowDirectoryForTest(): void {
+  followDirectory = null;
 }
